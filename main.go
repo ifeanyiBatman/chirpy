@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -20,9 +23,10 @@ func main() {
 	}
 
 	serveMux.Handle("/app/", http.StripPrefix("/app/", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
-	serveMux.HandleFunc("GET /healthz", healthz)
-	serveMux.HandleFunc("GET /metrics", apiCfg.metrics)
-	serveMux.HandleFunc("POST /reset",apiCfg.resetMetrics)
+	serveMux.HandleFunc("GET /api/healthz", healthz)
+	serveMux.HandleFunc("POST /api/validate_chirp", validate_chirp)
+	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
+	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
 	srv.ListenAndServe()
 }
 
@@ -41,12 +45,82 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) metrics(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/html ")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
+	w.Write([]byte(fmt.Sprintf(`<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>`, cfg.fileserverHits.Load())))
 }
 
-func (cfg *apiConfig)  resetMetrics(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, req *http.Request) {
 	cfg.fileserverHits.Store(0)
-	
+
+}
+
+func validate_chirp(w http.ResponseWriter, req *http.Request) {
+	type chirp struct {
+		Body string `json:"body"`
+	}
+	type errorJson struct {
+		Error string `json:"error"`
+	}
+	type validity struct {
+		Valid bool `json:"valid"`
+	}
+	profane := []string{"kerfuffle", "sharbert", "fornax"}
+
+	var reqChirp chirp
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&reqChirp)
+	if err != nil {
+		w.WriteHeader(500)
+		wrong := errorJson{
+			Error: fmt.Sprintf("Something went wrong: %s", err),
+		}
+		dat, err := json.Marshal(wrong)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		w.Write(dat)
+		return
+	}
+
+	if len(reqChirp.Body) > 140 {
+		w.WriteHeader(http.StatusBadRequest)
+		wrong := errorJson{
+			Error: "Chirp is too long",
+		}
+		dat, err := json.Marshal(wrong)
+		if err != nil {
+			fmt.Println(err)
+		}
+		w.Write(dat)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+	words := strings.Split(reqChirp.Body, " ")
+	cleanedWords := []string{}
+	for _, word := range words {
+		if slices.Contains(profane, strings.ToLower(word)) {
+			cleanedWords = append(cleanedWords, "****")
+		} else {
+			cleanedWords = append(cleanedWords, word)
+		}
+	}
+	cleanedChirp := strings.Join(cleanedWords, " ")
+	resChirp := chirp{
+		Body: cleanedChirp,
+	}
+	dat, err := json.Marshal(resChirp)
+	if err != nil {
+		fmt.Println(err)
+	}
+	w.Write(dat)
+
 }
