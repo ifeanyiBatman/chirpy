@@ -1,18 +1,20 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"sync/atomic"
-	"database/sql"
+	"time"
 
 	"os"
 
-	"github.com/joho/godotenv"
+	"github.com/google/uuid"
 	"github.com/ifeanyibatman/chirpy/internal/database"
+	"github.com/joho/godotenv"
 
 	_ "github.com/lib/pq"
 )
@@ -20,6 +22,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	platform       string
 }
 
 func main() {
@@ -32,6 +35,8 @@ func main() {
 	}
 	apiCfg := &apiConfig{}
 	apiCfg.db = database.New(db)
+	apiCfg.platform = os.Getenv("PLATFORM")
+
 
 	serveMux := http.NewServeMux()
 	srv := http.Server{
@@ -42,6 +47,7 @@ func main() {
 	serveMux.Handle("/app/", http.StripPrefix("/app/", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	serveMux.HandleFunc("GET /api/healthz", healthz)
 	serveMux.HandleFunc("POST /api/validate_chirp", validate_chirp)
+	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
 	srv.ListenAndServe()
@@ -74,6 +80,20 @@ func (cfg *apiConfig) metrics(w http.ResponseWriter, req *http.Request) {
 
 func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, req *http.Request) {
 	cfg.fileserverHits.Store(0)
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	err := cfg.db.DeleteUsers(req.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte("Users deleted successfully"))
+
+
 
 }
 
@@ -138,6 +158,44 @@ func validate_chirp(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		fmt.Println(err)
 	}
+	w.Write(dat)
+
+}
+
+func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
+	type userEmail struct {
+		Email string `json:"email"`
+	}
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+
+	params := userEmail{}
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	user, err := cfg.db.CreateUser(req.Context(), params.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	resUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	dat, err := json.Marshal(resUser)
+	if err != nil {
+		fmt.Println(err)
+	}
+	w.WriteHeader(http.StatusCreated)
 	w.Write(dat)
 
 }
