@@ -7,14 +7,31 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"database/sql"
+
+	"os"
+
+	"github.com/joho/godotenv"
+	"github.com/ifeanyibatman/chirpy/internal/database"
+
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
 }
 
 func main() {
+
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println(err)
+	}
 	apiCfg := &apiConfig{}
+	apiCfg.db = database.New(db)
 
 	serveMux := http.NewServeMux()
 	srv := http.Server{
