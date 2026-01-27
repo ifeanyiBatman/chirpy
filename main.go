@@ -37,7 +37,6 @@ func main() {
 	apiCfg.db = database.New(db)
 	apiCfg.platform = os.Getenv("PLATFORM")
 
-
 	serveMux := http.NewServeMux()
 	srv := http.Server{
 		Addr:    ":8080",
@@ -46,8 +45,12 @@ func main() {
 
 	serveMux.Handle("/app/", http.StripPrefix("/app/", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	serveMux.HandleFunc("GET /api/healthz", healthz)
-	serveMux.HandleFunc("POST /api/validate_chirp", validate_chirp)
+
+	//serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirps) 
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirp)
+
+	//Admin
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
 	srv.ListenAndServe()
@@ -86,21 +89,22 @@ func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, req *http.Request) {
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
+
 	err := cfg.db.DeleteUsers(req.Context())
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	w.Write([]byte("Users deleted successfully"))
-
-
+	w.Write([]byte("Users and Chirps deleted successfully"))
 
 }
 
-func validate_chirp(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) createChirp(w http.ResponseWriter, req *http.Request) {
 	type chirp struct {
-		Body string `json:"body"`
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
+
 	type errorJson struct {
 		Error string `json:"error"`
 	}
@@ -139,8 +143,6 @@ func validate_chirp(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-
 	words := strings.Split(reqChirp.Body, " ")
 	cleanedWords := []string{}
 	for _, word := range words {
@@ -151,13 +153,41 @@ func validate_chirp(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	cleanedChirp := strings.Join(cleanedWords, " ")
-	resChirp := chirp{
-		Body: cleanedChirp,
-	}
-	dat, err := json.Marshal(resChirp)
+
+	dbChirp, err := cfg.db.CreateChirp(req.Context(), database.CreateChirpParams{
+		Body:   cleanedChirp,
+		UserID: reqChirp.UserID,
+	})
 	if err != nil {
 		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
 	}
+
+	type Chirp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	res := Chirp{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+
+	dat, err := json.Marshal(res)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
 	w.Write(dat)
 
 }
