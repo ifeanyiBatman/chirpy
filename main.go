@@ -13,6 +13,7 @@ import (
 	"os"
 
 	"github.com/google/uuid"
+	"github.com/ifeanyibatman/chirpy/internal/auth"
 	"github.com/ifeanyibatman/chirpy/internal/database"
 	"github.com/joho/godotenv"
 
@@ -32,12 +33,15 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	tokenSecret    string
+	jwt_secret     string
 }
 
 func main() {
@@ -51,7 +55,7 @@ func main() {
 	apiCfg := &apiConfig{}
 	apiCfg.db = database.New(db)
 	apiCfg.platform = os.Getenv("PLATFORM")
-
+	apiCfg.jwt_secret = os.Getenv("JWT_SECRET")
 	serveMux := http.NewServeMux()
 	srv := http.Server{
 		Addr:    ":8080",
@@ -65,6 +69,7 @@ func main() {
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirp)
+	serveMux.HandleFunc("POST /api/login", apiCfg.login)
 
 	//Admin
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
@@ -94,7 +99,7 @@ func (cfg *apiConfig) metrics(w http.ResponseWriter, req *http.Request) {
     <h1>Welcome, Chirpy Admin</h1>
     <p>Chirpy has been visited %d times!</p>
   </body>
-</html>`, cfg.fileserverHits.Load())))
+	</html>`, cfg.fileserverHits.Load())))
 }
 
 func (cfg *apiConfig) resetMetrics(w http.ResponseWriter, req *http.Request) {
@@ -129,9 +134,20 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, req *http.Request) {
 	}
 	profane := []string{"kerfuffle", "sharbert", "fornax"}
 
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	validatedID, err := auth.ValidateJWT(token, cfg.jwt_secret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
 	var reqChirp chirp
 	decoder := json.NewDecoder(req.Body)
-	err := decoder.Decode(&reqChirp)
+	err = decoder.Decode(&reqChirp)
 	if err != nil {
 		w.WriteHeader(500)
 		wrong := errorJson{
@@ -143,6 +159,10 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, req *http.Request) {
 		}
 
 		w.Write(dat)
+		return
+	}
+	if reqChirp.UserID != validatedID {
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
@@ -202,7 +222,8 @@ func (cfg *apiConfig) createChirp(w http.ResponseWriter, req *http.Request) {
 
 func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 	type userEmail struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	params := userEmail{}
 	decoder := json.NewDecoder(req.Body)
@@ -211,7 +232,17 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	user, err := cfg.db.CreateUser(req.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	args := database.CreateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+	}
+	user, err := cfg.db.CreateUser(req.Context(), args)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -291,4 +322,62 @@ func (cfg *apiConfig) getChirp(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write(dat)
+}
+
+func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
+	type credentials struct {
+		Email         string `json:"email"`
+		Password      string `json:"password"`
+		ExpiresInsecs int    `json:"expires_in_seconds"`
+	}
+
+	var reqCred credentials
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&reqCred)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+
+	}
+	hour := 3600
+	if reqCred.ExpiresInsecs == 0 || reqCred.ExpiresInsecs > hour {
+		reqCred.ExpiresInsecs = hour
+	}
+	user, err := cfg.db.GetUserByEmail(req.Context(), reqCred.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	match, err := auth.CheckPasswordHash(reqCred.Password, user.HashedPassword)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if !match {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.jwt_secret, time.Duration(reqCred.ExpiresInsecs)*time.Second)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	resUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+		Token:     token,
+	}
+	dat, err := json.Marshal(resUser)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
+
 }
