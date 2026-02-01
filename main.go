@@ -72,14 +72,17 @@ func main() {
 
 	serveMux.Handle("/app/", http.StripPrefix("/app/", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	serveMux.HandleFunc("GET /api/healthz", healthz)
-
+	//Chirps
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirps)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirp)
-	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirp)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirp)
+	//Users
+	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
 	serveMux.HandleFunc("POST /api/login", apiCfg.login)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshToken)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeToken)
+	serveMux.HandleFunc("PUT /api/users", apiCfg.updateUser)
 	//Admin
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
@@ -459,6 +462,97 @@ func (cfg *apiConfig) revokeToken(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-	return
+}
 
+func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwt_secret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	user, err := cfg.db.UpdateUser(req.Context(), database.UpdateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPassword,
+		ID:             userID,
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	resUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	dat, err := json.Marshal(resUser)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
+	chirpID, err := uuid.Parse(req.PathValue("chirpID"))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	validatedUserID, err := auth.ValidateJWT(token, cfg.jwt_secret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(req.Context(), chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	if chirp.UserID != validatedUserID {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	err = cfg.db.DeleteChirp(req.Context(), chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
