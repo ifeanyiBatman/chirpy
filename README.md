@@ -49,21 +49,17 @@ A social media backend clone written in Go!
 
 ## API Endpoints
 
-### Public
-- `GET /api/healthz`: Check server health.
-- `GET /api/chirps`: Get all chirps. Supports query parameters `?sort=desc` and `?author_id=<uuid>`.
-- `GET /api/chirps/{chirpID}`: Get a single chirp by ID.
-- `POST /api/users`: Create a new user account.
-- `POST /api/login`: Login to get access and refresh tokens.
+For detailed API documentation, including request bodies and headers, please see [API.md](API.md).
 
-### Authenticated
-- `POST /api/chirps`: Create a new chirp.
-- `DELETE /api/chirps/{chirpID}`: Delete your own chirp.
-- `PUT /api/users`: Update your email and password.
-- `POST /api/refresh`: Refresh your access token.
-- `POST /api/revoke`: Revoke your refresh token.
-
-### Webhooks
-- `POST /api/polka/webhooks`: Upgrade users to Chirpy Red status.
-
-
+### Quick List
+- `GET /api/healthz`
+- `GET /api/chirps`
+- `GET /api/chirps/{chirpID}`
+- `POST /api/users`
+- `POST /api/login`
+- `POST /api/chirps`
+- `DELETE /api/chirps/{chirpID}`
+- `PUT /api/users`
+- `POST /api/refresh`
+- `POST /api/revoke`
+- `POST /api/polka/webhooks`
