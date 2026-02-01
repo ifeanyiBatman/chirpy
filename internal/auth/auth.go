@@ -84,3 +84,11 @@ func MakeRefreshToken() (string, error) {
 	 rand.Read(bytes)
 	return hex.EncodeToString(bytes), nil
 }
+
+ func GetAPIKey(headers http.Header) (string, error){
+	apiKey := headers.Get("X-API-Key")
+	if apiKey == "" {
+		return "", errors.New("X-API-Key header is missing")
+	}
+	return strings.TrimSpace(apiKey), nil
+ }

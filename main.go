@@ -39,19 +39,19 @@ type LoginResponse struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	IsChirpyRed bool    `json:"is_chirpy_red"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
-	//	tokenSecret    string
-	jwt_secret string
+	jwt_secret     string
+	polka_secret   string
 }
 
 func main() {
@@ -66,6 +66,7 @@ func main() {
 	apiCfg.db = database.New(db)
 	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.jwt_secret = os.Getenv("JWT_SECRET")
+	apiCfg.polka_secret = os.Getenv("POLKA_SECRET")
 	serveMux := http.NewServeMux()
 	srv := http.Server{
 		Addr:    ":8080",
@@ -263,10 +264,10 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	resUser := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
 		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(resUser)
@@ -279,8 +280,21 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 }
 
 func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
+	var chirps []database.Chirp
+	var err error
 
-	chirps, err := cfg.db.GetChirps(req.Context())
+	authorID := req.URL.Query().Get("author_id")
+	if authorID != "" {
+		authorUUID, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		chirps, err = cfg.db.GetChirpsByUserID(req.Context(), authorUUID)
+	} else {
+		chirps, err = cfg.db.GetChirps(req.Context())
+	}
+
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -288,7 +302,6 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 
 	resChirps := []Chirp{}
 	for _, chirp := range chirps {
-
 		resChirps = append(resChirps, Chirp{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
@@ -391,7 +404,7 @@ func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 		CreatedAt:    user.CreatedAt,
 		UpdatedAt:    user.UpdatedAt,
 		Email:        user.Email,
-		IsChirpyRed:   user.IsChirpyRed,
+		IsChirpyRed:  user.IsChirpyRed,
 		Token:        token,
 		RefreshToken: refreshToken,
 	}
@@ -511,10 +524,10 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 	}
 
 	resUser := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
 		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(resUser)
@@ -579,7 +592,15 @@ func (cfg *apiConfig) upgradeUserToChirpyRed(w http.ResponseWriter, req *http.Re
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if apiKey != cfg.polka_secret {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if webhook.Event != "user.upgraded" {
 		w.WriteHeader(http.StatusNoContent)
 		return
