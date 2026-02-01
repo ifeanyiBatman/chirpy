@@ -28,20 +28,28 @@ type Chirp struct {
 	UserID    uuid.UUID `json:"user_id"`
 }
 
+type LoginResponse struct {
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
+}
+
 type User struct {
 	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
-	Token     string    `json:"token"`
 }
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
-	tokenSecret    string
-	jwt_secret     string
+	//	tokenSecret    string
+	jwt_secret string
 }
 
 func main() {
@@ -70,7 +78,8 @@ func main() {
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUser)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirp)
 	serveMux.HandleFunc("POST /api/login", apiCfg.login)
-
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshToken)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeToken)
 	//Admin
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
@@ -326,9 +335,8 @@ func (cfg *apiConfig) getChirp(w http.ResponseWriter, req *http.Request) {
 
 func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 	type credentials struct {
-		Email         string `json:"email"`
-		Password      string `json:"password"`
-		ExpiresInsecs int    `json:"expires_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	var reqCred credentials
@@ -340,9 +348,6 @@ func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 
 	}
 	hour := 3600
-	if reqCred.ExpiresInsecs == 0 || reqCred.ExpiresInsecs > hour {
-		reqCred.ExpiresInsecs = hour
-	}
 	user, err := cfg.db.GetUserByEmail(req.Context(), reqCred.Email)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
@@ -358,18 +363,29 @@ func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	token, err := auth.MakeJWT(user.ID, cfg.jwt_secret, time.Duration(reqCred.ExpiresInsecs)*time.Second)
+	token, err := auth.MakeJWT(user.ID, cfg.jwt_secret, time.Duration(hour)*time.Second)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	cfg.db.CreateRefreshToken(req.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour),
+	})
 
-	resUser := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:     token,
+	resUser := LoginResponse{
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 	dat, err := json.Marshal(resUser)
 	if err != nil {
@@ -379,5 +395,70 @@ func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	w.Write(dat)
+
+}
+
+func (cfg *apiConfig) refreshToken(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	refreshTokenDb, err := cfg.db.GetRefreshToken(req.Context(), token)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if refreshTokenDb.ExpiresAt.Before(time.Now()) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if refreshTokenDb.RevokedAt.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	userId := refreshTokenDb.UserID
+	accessToken, err := auth.MakeJWT(userId, cfg.jwt_secret, time.Hour)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	type resToken struct {
+		Token string `json:"token"`
+	}
+	dat, err := json.Marshal(resToken{
+		Token: accessToken,
+	})
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(dat)
+}
+
+func (cfg *apiConfig) revokeToken(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	err = cfg.db.RevokeRefreshToken(req.Context(), token)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return
 
 }
