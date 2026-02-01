@@ -33,6 +33,7 @@ type LoginResponse struct {
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	Email        string    `json:"email"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
 }
@@ -42,6 +43,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	IsChirpyRed bool    `json:"is_chirpy_red"`
 }
 
 type apiConfig struct {
@@ -83,6 +85,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshToken)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeToken)
 	serveMux.HandleFunc("PUT /api/users", apiCfg.updateUser)
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeUserToChirpyRed)
 	//Admin
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.metrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetMetrics)
@@ -264,6 +267,7 @@ func (cfg *apiConfig) createUser(w http.ResponseWriter, req *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(resUser)
 	if err != nil {
@@ -387,6 +391,7 @@ func (cfg *apiConfig) login(w http.ResponseWriter, req *http.Request) {
 		CreatedAt:    user.CreatedAt,
 		UpdatedAt:    user.UpdatedAt,
 		Email:        user.Email,
+		IsChirpyRed:   user.IsChirpyRed,
 		Token:        token,
 		RefreshToken: refreshToken,
 	}
@@ -510,6 +515,7 @@ func (cfg *apiConfig) updateUser(w http.ResponseWriter, req *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	dat, err := json.Marshal(resUser)
 	if err != nil {
@@ -555,4 +561,41 @@ func (cfg *apiConfig) deleteChirp(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) upgradeUserToChirpyRed(w http.ResponseWriter, req *http.Request) {
+
+	type polkaWebhook struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	webhook := polkaWebhook{}
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&webhook)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if webhook.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	userID, err := uuid.Parse(webhook.Data.UserID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	_, err = cfg.db.UpgradeUserToChirpyRed(req.Context(), userID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+
 }
