@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -300,6 +301,13 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	sortDirection := req.URL.Query().Get("sort")
+	if sortDirection == "desc" {
+		sort.Slice(chirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
+	}
+
 	resChirps := []Chirp{}
 	for _, chirp := range chirps {
 		resChirps = append(resChirps, Chirp{
@@ -310,9 +318,9 @@ func (cfg *apiConfig) getChirps(w http.ResponseWriter, req *http.Request) {
 			UserID:    chirp.UserID,
 		})
 	}
+
 	dat, err := json.Marshal(resChirps)
 	if err != nil {
-		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
